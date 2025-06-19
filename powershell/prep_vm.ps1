@@ -1,5 +1,7 @@
+# Script by Matthijs Baas
+
 # 1. Download and install Azure CLI, should always be latest
-$ProgressPreference = 'Continue'  # Show progress bar
+$ProgressPreference = 'Continue'
 
 Write-Host "Step 1: Downloading Azure CLI installer..."
 Invoke-WebRequest -Uri "https://aka.ms/installazurecliwindowsx64" -OutFile ".\AzureCLI.msi"
@@ -18,14 +20,14 @@ Connect-AzAccount -Identity
 Write-Host "Authentication complete.`n"
 
 # 3. Key Vault and user setup with fixed secret name
-$vaultName = "your-keyvault-name"
-$secretName = "commonPassword"
-$userNames = @("shaks_1", "shaks_2", "shaks_3", "shaks_4")
+$vaultName = "your-keyvault-name" # change this
+$secretName = "your-secret-name"  # change this
+$userNames = @("shaks_admin1", "shaks_admin2", "shaks_admin3", "shaks_admin4")
 
 Write-Host "Step 5: Retrieving password from Key Vault '$vaultName'..."
 $password = Get-AzKeyVaultSecret -VaultName $vaultName -Name $secretName -AsPlainText
 $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-Write-Host "Password retrieved.`n"
+Write-Host "Secret retrieved.`n"
 
 Write-Host "Step 6: Creating local users and adding them to Administrators group..."
 foreach ($user in $userNames) {
@@ -89,6 +91,9 @@ Write-Host "kubectl installation complete.`n"
 
 # 7. Verify installed versions
 Write-Host "Step 10: Verifying installed versions..."
+
+Write-Host "`naz version:"
+az version
 
 Write-Host "`nkubelogin version:"
 kubelogin --version
