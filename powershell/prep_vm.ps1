@@ -1,5 +1,3 @@
-# Script by Matthijs Baas
-
 # 1. Download and install Azure CLI, should always be latest
 $ProgressPreference = 'Continue'
 
