@@ -1,3 +1,4 @@
+# RUN AS ADMINISTRATOR
 # This script does the following:
 
 # Checks installed versions of Terraform, kubectl, argocd, kubelogin, and Azure CLI
