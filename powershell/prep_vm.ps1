@@ -16,14 +16,14 @@ $installPath = "C:\Tools"
 # Create C:\Tools if it doesn't exist
 if (-Not (Test-Path $installPath)) {
     New-Item -ItemType Directory -Path $installPath | Out-Null
-    Write-Host "📁 Created directory: $installPath"
+    Write-Host "Created directory: $installPath"
 }
 
 # Add C:\Tools to system PATH if not present
 $existingPath = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::Machine)
 if (-not ($existingPath -split ";" | Where-Object { $_ -ieq $installPath })) {
     [Environment]::SetEnvironmentVariable("Path", "$existingPath;$installPath", [EnvironmentVariableTarget]::Machine)
-    Write-Host "🔧 Added $installPath to system PATH (you may need to restart your shell)."
+    Write-Host "Added $installPath to system PATH (you may need to restart your shell)."
 }
 
 function Get-StoredVersion {
@@ -112,7 +112,7 @@ function Download-And-Extract-Exe {
 
     try {
         Copy-Item -Path $exe.FullName -Destination $TargetExe -Force
-        Write-Host "✅ Installed or Updated: $TargetExe"
+        Write-Host "Installed or Updated: $TargetExe"
     } catch {
         throw "Failed to copy $($exe.FullName) to $TargetExe. Error: $_"
     }
@@ -129,7 +129,7 @@ function Download-And-Place-Exe {
     Write-Host "Downloading EXE from $Url"
     try {
         Invoke-WebRequest -Uri $Url -OutFile $TargetExe -UseBasicParsing
-        Write-Host "✅ Installed or Updated: $TargetExe"
+        Write-Host "Installed or Updated: $TargetExe"
     } catch {
         throw "Failed to download EXE from $Url. Error: $_"
     }
@@ -146,7 +146,7 @@ function Install-Or-Update-Tool {
 
     $exePath = Join-Path $installPath "$Name.exe"
     $storedVersion = Get-StoredVersion -ToolName $Name
-    Write-Host "`n🔍 Checking $Name..."
+    Write-Host "`nChecking $Name..."
 
     $current = Get-CurrentVersion -Command $Cmd
     $latest = Get-GitHubLatestVersion -Repo $Repo
@@ -154,10 +154,10 @@ function Install-Or-Update-Tool {
     Write-Host "$Name current: $current, latest: $latest, stored: $storedVersion"
 
     if (($current -eq "not-installed" -and -not $storedVersion) -or ($latest -ne $storedVersion)) {
-        Write-Host "⬆️ Installing or updating $Name..."
+        Write-Host "⬆Installing or updating $Name..."
 
         if (Get-Process -Name $Name -ErrorAction SilentlyContinue) {
-            Write-Host "⚠️ Detected running $Name process. Stopping it to update..."
+            Write-Host "Detected running $Name process. Stopping it to update..."
             Get-Process -Name $Name -ErrorAction SilentlyContinue | Stop-Process -Force
             Start-Sleep -Seconds 2
         }
@@ -194,12 +194,12 @@ function Install-Or-Update-Tool {
         Set-StoredVersion -ToolName $Name -Version $latest
     }
     else {
-        Write-Host "✅ $Name is up to date."
+        Write-Host "$Name is up to date."
     }
 }
 
 function Install-Or-Update-AzureCLI {
-    Write-Host "`n🔍 Checking Azure CLI..."
+    Write-Host "`nChecking Azure CLI..."
 
     $storedVersion = Get-StoredVersion -ToolName "azurecli"
     try {
@@ -216,10 +216,10 @@ function Install-Or-Update-AzureCLI {
         Write-Host "Azure CLI current: $current, latest: $latest, stored: $storedVersion"
 
         if (($current -eq "not-installed" -and -not $storedVersion) -or ($latest -ne $storedVersion)) {
-            Write-Host "⬆️ Installing or updating Azure CLI..."
+            Write-Host "⬆Installing or updating Azure CLI..."
 
             if (Get-Process -Name "az" -ErrorAction SilentlyContinue) {
-                Write-Host "⚠️ Detected running az process. Stopping it to update..."
+                Write-Host "Detected running az process. Stopping it to update..."
                 Get-Process -Name "az" -ErrorAction SilentlyContinue | Stop-Process -Force
                 Start-Sleep -Seconds 2
             }
@@ -228,13 +228,13 @@ function Install-Or-Update-AzureCLI {
             Invoke-WebRequest -Uri $location -OutFile $msi
             Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait
             Remove-Item $msi
-            Write-Host "✅ Azure CLI installed or updated to $latest"
+            Write-Host "Azure CLI installed or updated to $latest"
             Set-StoredVersion -ToolName "azurecli" -Version $latest
         } else {
-            Write-Host "✅ Azure CLI is up to date."
+            Write-Host "Azure CLI is up to date."
         }
     } else {
-        Write-Warning "⚠️ Could not resolve Azure CLI version from redirect."
+        Write-Warning "Could not resolve Azure CLI version from redirect."
     }
 }
 
@@ -248,7 +248,7 @@ function Get-DockerDesktopVersion {
 }
 
 function Install-Or-Update-DockerDesktop {
-    Write-Host "`n🔍 Checking Docker Desktop..."
+    Write-Host "`nChecking Docker Desktop..."
 
     $storedVersion = Get-StoredVersion -ToolName "dockerdesktop"
     $currentVersion = Get-DockerDesktopVersion
@@ -260,7 +260,7 @@ function Install-Or-Update-DockerDesktop {
     }
 
     if (($null -eq $currentVersion) -or ($storedVersion -ne $currentVersion)) {
-        Write-Host "⬇️ Installing or updating Docker Desktop..."
+        Write-Host "⬇Installing or updating Docker Desktop..."
 
         $dockerInstaller = "$env:TEMP\DockerDesktopInstaller.exe"
         $downloadUrl = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
@@ -269,7 +269,7 @@ function Install-Or-Update-DockerDesktop {
         Start-Process -FilePath $dockerInstaller -ArgumentList "install --quiet" -Wait
         Remove-Item $dockerInstaller
 
-        Write-Host "✅ Docker Desktop installation attempted (you may need to log out or restart)."
+        Write-Host "Docker Desktop installation attempted (you may need to log out or restart)."
         if ($currentVersion) {
             Set-StoredVersion -ToolName "dockerdesktop" -Version $currentVersion
         } else {
@@ -282,7 +282,7 @@ function Install-Or-Update-DockerDesktop {
         }
     }
     else {
-        Write-Host "✅ Docker Desktop is up to date."
+        Write-Host "Docker Desktop is up to date."
     }
 }
 
