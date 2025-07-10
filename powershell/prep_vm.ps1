@@ -1,105 +1,300 @@
-# 1. Download and install Azure CLI, should always be latest
-$ProgressPreference = 'Continue'
+# RUN AS ADMINISTRATOR
+# This script does the following:
+# - Checks installed versions of Terraform, kubectl, argocd, kubelogin, helm, Docker Desktop, and Azure CLI
+# - Gets latest versions from GitHub or Microsoft
+# - Downloads and installs or updates missing/outdated tools to C:\Tools
+# - Extracts executables from ZIPs (handles kubelogin’s nested folder)
+# - Stores installed versions to prevent redundant downloads
+# - Adds C:\Tools to system PATH if needed
+# - Stops running tool processes before updating
+# - Makes tools available immediately in current session
 
-Write-Host "Step 1: Downloading Azure CLI installer..."
-Invoke-WebRequest -Uri "https://aka.ms/installazurecliwindowsx64" -OutFile ".\AzureCLI.msi"
+$ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$installPath = "C:\Tools"
 
-Write-Host "Step 2: Installing Azure CLI silently..."
-Start-Process msiexec.exe -Wait -ArgumentList '/I AzureCLI.msi /quiet'
-
-Write-Host "Step 3: Cleaning up installer file..."
-Remove-Item .\AzureCLI.msi
-
-Write-Host "Azure CLI installation complete.`n"
-
-# 2. Connect to Azure using the VM's managed identity
-Write-Host "Step 4: Authenticating to Azure using VM's managed identity..."
-Connect-AzAccount -Identity
-Write-Host "Authentication complete.`n"
-
-# 3. Key Vault and user setup with fixed secret name
-$vaultName = "your-keyvault-name" # change this
-$secretName = "your-secret-name"  # change this
-$userNames = @("shaks_admin1", "shaks_admin2", "shaks_admin3", "shaks_admin4")
-
-Write-Host "Step 5: Retrieving password from Key Vault '$vaultName'..."
-$password = Get-AzKeyVaultSecret -VaultName $vaultName -Name $secretName -AsPlainText
-$securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-Write-Host "Secret retrieved.`n"
-
-Write-Host "Step 6: Creating local users and adding them to Administrators group..."
-foreach ($user in $userNames) {
-    Write-Host " - Creating user '$user'..."
-    New-LocalUser -Name $user -Password $securePassword -FullName $user -Description "Admin User" -PasswordNeverExpires
-    Add-LocalGroupMember -Group "Administrators" -Member $user
+# Create C:\Tools if it doesn't exist
+if (-Not (Test-Path $installPath)) {
+    New-Item -ItemType Directory -Path $installPath | Out-Null
+    Write-Host "📁 Created directory: $installPath"
 }
-Write-Host "User setup complete.`n"
 
-# 4. Download kubelogin from GitHub (asset + unzip)
-$headers = @{ "User-Agent" = "PowerShell" }
-Write-Host "Step 7: Downloading latest kubelogin release..."
-$kubeloginApi = "https://api.github.com/repos/Azure/kubelogin/releases/latest"
-$kubeloginRelease = Invoke-RestMethod -Uri $kubeloginApi -Headers $headers
-$kubeloginAsset = $kubeloginRelease.assets | Where-Object { $_.name -like "*kubelogin-win-amd64.zip*" } | Select-Object -First 1
+# Add C:\Tools to system PATH if not present
+$existingPath = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::Machine)
+if (-not ($existingPath -split ";" | Where-Object { $_ -ieq $installPath })) {
+    [Environment]::SetEnvironmentVariable("Path", "$existingPath;$installPath", [EnvironmentVariableTarget]::Machine)
+    Write-Host "🔧 Added $installPath to system PATH (you may need to restart your shell)."
+}
 
-if ($kubeloginAsset) {
-    $fileName = $kubeloginAsset.name
-    $tempPath = "$env:TEMP\$fileName"
-    Invoke-WebRequest -Uri $kubeloginAsset.browser_download_url -OutFile $tempPath -UseBasicParsing
-
-    Write-Host "Extracting kubelogin zip and copying binaries to System32..."
-    $extractPath = "$env:TEMP\$($fileName -replace '\.zip$', '')"
-    Expand-Archive -Path $tempPath -DestinationPath $extractPath -Force
-    Get-ChildItem -Path $extractPath -Recurse -File | ForEach-Object {
-        Copy-Item $_.FullName -Destination "C:\Windows\System32" -Force
+function Get-StoredVersion {
+    param($ToolName)
+    $versionFile = Join-Path $installPath "$ToolName.version"
+    if (Test-Path $versionFile) {
+        return (Get-Content $versionFile -Raw).Trim()
     }
-    Remove-Item $tempPath -Force
-    Remove-Item $extractPath -Recurse -Force
-    Write-Host "kubelogin installation complete.`n"
-} else {
-    Write-Host "kubelogin asset not found! Skipping.`n"
+    return $null
 }
 
-# 5. Download argocd.exe by constructing URL manually with tag_name
-Write-Host "Step 8: Downloading latest argocd executable..."
-$argoApi = "https://api.github.com/repos/argoproj/argo-cd/releases/latest"
-$argoRelease = Invoke-RestMethod -Uri $argoApi -Headers $headers
-$argoVersion = $argoRelease.tag_name
-$argocdFileName = "argocd-windows-amd64.exe"
-$argocdUrl = "https://github.com/argoproj/argo-cd/releases/download/$argoVersion/$argocdFileName"
-$argocdTemp = "$env:TEMP\$argocdFileName"
-$argocdDest = "C:\Windows\System32\argocd.exe"
+function Set-StoredVersion {
+    param($ToolName, $Version)
+    $versionFile = Join-Path $installPath "$ToolName.version"
+    $Version | Out-File -FilePath $versionFile -Encoding utf8
+}
 
-Invoke-WebRequest -Uri $argocdUrl -OutFile $argocdTemp -UseBasicParsing
-Copy-Item $argocdTemp -Destination $argocdDest -Force
-Remove-Item $argocdTemp -Force
-Write-Host "argocd installation complete.`n"
+function Get-CurrentVersion {
+    param (
+        [string]$Command,
+        [string]$Pattern = '([\d\.]+)'
+    )
+    try {
+        return (& $Command version 2>&1 | Select-String -Pattern $Pattern | Select-Object -First 1).Matches[0].Groups[1].Value
+    } catch {
+        return "not-installed"
+    }
+}
 
-# 6. Download kubectl using stable.txt
-Write-Host "Step 9: Downloading latest stable kubectl..."
-$kubectlVersion = Invoke-RestMethod -Uri "https://cdn.dl.k8s.io/release/stable.txt"
-$kubectlUrl = "https://dl.k8s.io/release/$kubectlVersion/bin/windows/amd64/kubectl.exe"
-$kubectlDest = "C:\Windows\System32\kubectl.exe"
-$kubectlTemp = "$env:TEMP\kubectl.exe"
+function Get-GitHubLatestVersion {
+    param (
+        [string]$Repo
+    )
+    $url = "https://api.github.com/repos/$Repo/releases/latest"
+    $response = Invoke-RestMethod -Uri $url -Headers @{'User-Agent' = 'PowerShell'}
+    return $response.tag_name.TrimStart('v')
+}
 
-Invoke-WebRequest -Uri $kubectlUrl -OutFile $kubectlTemp -UseBasicParsing
-Copy-Item $kubectlTemp -Destination $kubectlDest -Force
-Remove-Item $kubectlTemp -Force
-Write-Host "kubectl installation complete.`n"
+function Get-KubeloginDownloadUrl {
+    $repo = "Azure/kubelogin"
+    $apiUrl = "https://api.github.com/repos/$repo/releases/latest"
+    $response = Invoke-RestMethod -Uri $apiUrl -Headers @{ "User-Agent" = "PowerShell" }
 
-# 7. Verify installed versions
-Write-Host "Step 10: Verifying installed versions..."
+    foreach ($asset in $response.assets) {
+        if ($asset.name -ieq "kubelogin-win-amd64.zip") {
+            return @{ url = $asset.browser_download_url; type = "zip" }
+        }
+    }
+    throw "Could not find kubelogin-win-amd64.zip asset in latest kubelogin release."
+}
 
-Write-Host "`naz version:"
-az version
+function Download-And-Extract-Exe {
+    param (
+        [string]$ZipUrl,
+        [string]$TargetExe,
+        [string]$SubPathInZip = ""
+    )
+    Write-Host "Downloading ZIP from $ZipUrl"
+    $tmp = "$env:TEMP\tool.zip"
+    $extractPath = "$env:TEMP\tool-extract"
 
-Write-Host "`nkubelogin version:"
-kubelogin --version
+    Remove-Item $tmp -ErrorAction SilentlyContinue -Force
+    Remove-Item $extractPath -ErrorAction SilentlyContinue -Recurse -Force
 
-Write-Host "`nargocd version:"
-argocd version
+    try {
+        Invoke-WebRequest -Uri $ZipUrl -OutFile $tmp -UseBasicParsing
+    } catch {
+        throw "Failed to download $ZipUrl. Error: $_"
+    }
 
-Write-Host "`nkubectl version:"
-kubectl version --client
+    try {
+        Expand-Archive -Path $tmp -DestinationPath $extractPath -Force
+    } catch {
+        throw "Failed to extract ZIP $tmp. Error: $_"
+    }
 
-Write-Host "`nAll steps completed successfully."
+    if ([string]::IsNullOrEmpty($SubPathInZip)) {
+        $exe = Get-ChildItem -Path $extractPath -Filter "*.exe" -Recurse | Select-Object -First 1
+    } else {
+        $exe = Get-ChildItem -Path (Join-Path $extractPath $SubPathInZip) -Filter "*.exe" -Recurse | Select-Object -First 1
+    }
+
+    if (-not $exe) {
+        throw "No .exe found inside extracted archive from $ZipUrl at path $SubPathInZip"
+    }
+
+    try {
+        Copy-Item -Path $exe.FullName -Destination $TargetExe -Force
+        Write-Host "✅ Installed or Updated: $TargetExe"
+    } catch {
+        throw "Failed to copy $($exe.FullName) to $TargetExe. Error: $_"
+    }
+
+    Remove-Item $tmp -Force
+    Remove-Item $extractPath -Recurse -Force
+}
+
+function Download-And-Place-Exe {
+    param (
+        [string]$Url,
+        [string]$TargetExe
+    )
+    Write-Host "Downloading EXE from $Url"
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $TargetExe -UseBasicParsing
+        Write-Host "✅ Installed or Updated: $TargetExe"
+    } catch {
+        throw "Failed to download EXE from $Url. Error: $_"
+    }
+}
+
+function Install-Or-Update-Tool {
+    param (
+        [string]$Name,
+        [string]$Cmd,
+        [string]$Repo,
+        [string]$PlatformFilter,
+        [string]$Mode
+    )
+
+    $exePath = Join-Path $installPath "$Name.exe"
+    $storedVersion = Get-StoredVersion -ToolName $Name
+    Write-Host "`n🔍 Checking $Name..."
+
+    $current = Get-CurrentVersion -Command $Cmd
+    $latest = Get-GitHubLatestVersion -Repo $Repo
+
+    Write-Host "$Name current: $current, latest: $latest, stored: $storedVersion"
+
+    if (($current -eq "not-installed" -and -not $storedVersion) -or ($latest -ne $storedVersion)) {
+        Write-Host "⬆️ Installing or updating $Name..."
+
+        if (Get-Process -Name $Name -ErrorAction SilentlyContinue) {
+            Write-Host "⚠️ Detected running $Name process. Stopping it to update..."
+            Get-Process -Name $Name -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+        }
+
+        if ($Name -eq "terraform") {
+            $url = "https://releases.hashicorp.com/terraform/$latest/terraform_${latest}_windows_amd64.zip"
+            Download-And-Extract-Exe -ZipUrl $url -TargetExe $exePath
+        }
+        elseif ($Name -eq "kubectl") {
+            $url = "https://dl.k8s.io/release/v$latest/bin/windows/amd64/kubectl.exe"
+            Download-And-Place-Exe -Url $url -TargetExe $exePath
+        }
+        elseif ($Name -eq "kubelogin") {
+            $dlInfo = Get-KubeloginDownloadUrl
+            if ($dlInfo.type -eq "zip") {
+                Download-And-Extract-Exe -ZipUrl $dlInfo.url -TargetExe $exePath -SubPathInZip "bin\windows_amd64"
+            } else {
+                Download-And-Place-Exe -Url $dlInfo.url -TargetExe $exePath
+            }
+        }
+        elseif ($Name -eq "helm") {
+            $url = "https://get.helm.sh/helm-v$latest-windows-amd64.zip"
+            Download-And-Extract-Exe -ZipUrl $url -TargetExe $exePath -SubPathInZip "windows-amd64"
+        }
+        elseif ($Mode -eq "zip") {
+            $url = "https://github.com/$Repo/releases/latest/download/${Name}_${latest}_$PlatformFilter"
+            Download-And-Extract-Exe -ZipUrl $url -TargetExe $exePath
+        }
+        elseif ($Mode -eq "exe") {
+            $url = "https://github.com/$Repo/releases/latest/download/$PlatformFilter"
+            Download-And-Place-Exe -Url $url -TargetExe $exePath
+        }
+
+        Set-StoredVersion -ToolName $Name -Version $latest
+    }
+    else {
+        Write-Host "✅ $Name is up to date."
+    }
+}
+
+function Install-Or-Update-AzureCLI {
+    Write-Host "`n🔍 Checking Azure CLI..."
+
+    $storedVersion = Get-StoredVersion -ToolName "azurecli"
+    try {
+        $current = & az version | ConvertFrom-Json | Select-Object -ExpandProperty azure-cli
+    } catch {
+        $current = "not-installed"
+    }
+
+    $head = Invoke-WebRequest -Uri "https://aka.ms/InstallAzureCliWindows" -Method Head -MaximumRedirection 0 -ErrorAction SilentlyContinue
+    $location = $head.Headers["Location"]
+
+    if ($location -match "azure-cli-([\d\.]+)\.msi") {
+        $latest = $Matches[1]
+        Write-Host "Azure CLI current: $current, latest: $latest, stored: $storedVersion"
+
+        if (($current -eq "not-installed" -and -not $storedVersion) -or ($latest -ne $storedVersion)) {
+            Write-Host "⬆️ Installing or updating Azure CLI..."
+
+            if (Get-Process -Name "az" -ErrorAction SilentlyContinue) {
+                Write-Host "⚠️ Detected running az process. Stopping it to update..."
+                Get-Process -Name "az" -ErrorAction SilentlyContinue | Stop-Process -Force
+                Start-Sleep -Seconds 2
+            }
+
+            $msi = "$env:TEMP\azurecli.msi"
+            Invoke-WebRequest -Uri $location -OutFile $msi
+            Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait
+            Remove-Item $msi
+            Write-Host "✅ Azure CLI installed or updated to $latest"
+            Set-StoredVersion -ToolName "azurecli" -Version $latest
+        } else {
+            Write-Host "✅ Azure CLI is up to date."
+        }
+    } else {
+        Write-Warning "⚠️ Could not resolve Azure CLI version from redirect."
+    }
+}
+
+function Get-DockerDesktopVersion {
+    $dockerExePath = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+    if (Test-Path $dockerExePath) {
+        $version = (Get-Item $dockerExePath).VersionInfo.FileVersion
+        return $version
+    }
+    return $null
+}
+
+function Install-Or-Update-DockerDesktop {
+    Write-Host "`n🔍 Checking Docker Desktop..."
+
+    $storedVersion = Get-StoredVersion -ToolName "dockerdesktop"
+    $currentVersion = Get-DockerDesktopVersion
+
+    Write-Host "Docker Desktop current: $currentVersion, stored: $storedVersion"
+
+    if (-not $currentVersion) {
+        Write-Host "Docker Desktop not installed."
+    }
+
+    if (($null -eq $currentVersion) -or ($storedVersion -ne $currentVersion)) {
+        Write-Host "⬇️ Installing or updating Docker Desktop..."
+
+        $dockerInstaller = "$env:TEMP\DockerDesktopInstaller.exe"
+        $downloadUrl = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
+
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $dockerInstaller
+        Start-Process -FilePath $dockerInstaller -ArgumentList "install --quiet" -Wait
+        Remove-Item $dockerInstaller
+
+        Write-Host "✅ Docker Desktop installation attempted (you may need to log out or restart)."
+        if ($currentVersion) {
+            Set-StoredVersion -ToolName "dockerdesktop" -Version $currentVersion
+        } else {
+            # Wait and recheck version after install?
+            Start-Sleep -Seconds 10
+            $newVersion = Get-DockerDesktopVersion
+            if ($newVersion) {
+                Set-StoredVersion -ToolName "dockerdesktop" -Version $newVersion
+            }
+        }
+    }
+    else {
+        Write-Host "✅ Docker Desktop is up to date."
+    }
+}
+
+# === Run all tools ===
+Install-Or-Update-Tool -Name "terraform"  -Cmd "terraform"  -Repo "hashicorp/terraform" -PlatformFilter "windows_amd64.zip" -Mode "zip"
+Install-Or-Update-Tool -Name "kubectl"   -Cmd "kubectl"   -Repo "kubernetes/kubernetes" -PlatformFilter "kubectl.exe" -Mode "exe"
+Install-Or-Update-Tool -Name "argocd"    -Cmd "argocd"    -Repo "argoproj/argo-cd"   -PlatformFilter "argocd-windows-amd64.exe" -Mode "exe"
+Install-Or-Update-Tool -Name "kubelogin" -Cmd "kubelogin" -Repo "Azure/kubelogin"      -PlatformFilter "win-amd64.zip" -Mode "zip"
+Install-Or-Update-Tool -Name "helm"      -Cmd "helm"      -Repo "helm/helm"           -PlatformFilter "windows-amd64.zip" -Mode "zip"
+
+Install-Or-Update-AzureCLI
+Install-Or-Update-DockerDesktop
+
+# Make tools immediately available in current session
+$env:Path += ";$installPath"
