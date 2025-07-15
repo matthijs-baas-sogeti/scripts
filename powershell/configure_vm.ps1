@@ -1,3 +1,9 @@
+#RUN AS ADMINISTRATOR
+# This script will skip the MS Edge first launch config
+# it will always show the bookmark bar
+# it will add 3 shortcuts to the portal, argocd and grafana
+# 
+
 # Prompt user for prerequisites
 $prereq = Read-Host @"
 Before running this script, please ensure:
