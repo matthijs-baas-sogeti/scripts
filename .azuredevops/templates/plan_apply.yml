@@ -1,0 +1,58 @@
+parameters:
+  - name: backendServiceConnection
+    type: string
+  - name: environmentServiceConnection
+    type: string
+  - name: resourceGroupName
+    type: string
+    default: false
+  - name: storageAccountName
+    type: string
+    default: false
+  - name: containerName
+    type: string
+    default: false
+  - name: stateFileName
+    type: string
+    default: false
+  - name: workingDirectory
+    type: string
+    default: false
+  - name: command
+    type: string
+    default: false
+  - name: environmentVars
+    type: object
+    default: null
+  - name: jobs
+    type: object
+    default:
+      - name: Plan
+        tfcommand: apply
+        ansible_dry_run: true
+        condition: and(or(eq(variables['Build.Reason'],'PullRequest'),eq(variables['Build.Reason'],'Manual')),ne(variables['Build.SourceBranch'], 'refs/heads/main'))
+      - name: Apply
+        tfcommand: apply
+        ansible_dry_run: false
+        condition: eq(variables['Build.SourceBranch'], 'refs/heads/main')
+
+jobs:
+  - ${{ each j in parameters.jobs }}:
+      - job: ${{ j.name }}
+        condition: ${{ j.condition }}
+        variables:
+        - group: SSHKey
+        steps:
+          - template: "/.azuredevops/templates/terraform.yml"
+            parameters:
+              backendServiceConnection: ${{ parameters.backendServiceConnection }}
+              environmentServiceConnection: ${{ parameters.environmentServiceConnection }}
+              resourceGroupName: ${{ parameters.resourceGroupName }}
+              storageAccountName: ${{ parameters.storageAccountName }}
+              containerName: ${{ parameters.containerName }}
+              stateFileName: ${{ parameters.stateFileName }}
+              command: ${{ j.tfcommand }}
+              workingDirectory: ${{ parameters.workingDirectory }}
+              environmentVars: ${{ parameters.environmentVars }}
+              gitsshknownhosts: '$(git_ssh_known_hosts)' #Variable pulled in from Variable Group
+              terraformgitsshpub: '$(terraform_git_ssh_pub)' #Variable pulled in from Variable Group
