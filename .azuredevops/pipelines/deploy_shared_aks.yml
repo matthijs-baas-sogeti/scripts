@@ -1,0 +1,110 @@
+pr:
+  autoCancel: false
+
+pool:
+  name: CF-Managed-DevOps-Pool
+
+trigger:
+  batch: true
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - config/**
+      - terraform/**
+
+parameters:
+  - name: environment
+    displayName: "Environment"
+    type: string
+    default: "dev"
+    values:
+      - dev
+      - tst
+      - acc
+      - prd
+
+variables:
+  - template: ../templates/env_subscription_map.yml
+    parameters:
+      environment: ${{ parameters.environment }}
+
+  - group: "LandingZone ${{ variables.subscription_id }}"
+  - name: backendServiceConnection
+    value: "Managed Identity Service Connection to ${{ variables.subscription_name }}"
+  - name: environmentServiceConnection
+    value: "Managed Identity Service Connection to ${{ variables.subscription_name }}"
+  - name: resourceGroupName
+    value: "$(STATE-STORAGE-ACCOUNT-RG-NAME)"
+  - name: storageAccountName
+    value: "$(STATE-STORAGE-ACCOUNT)"
+  - name: containerName
+    value: "states"
+  - name: stateFileName
+    value: "deploy_shared_aks_${{ parameters.environment }}.tfstate"
+  - name: tfWorkingDirectory
+    value: "$(System.DefaultWorkingDirectory)/terraform/"
+
+stages:
+  - stage: CodeQuality
+    displayName: Checks Terraform Code Quality
+    jobs:
+      - job: CodeAnalysis
+        steps:
+          - script: |
+              pip3 install --upgrade pip && pip3 install --upgrade setuptools
+              pip3 install checkov
+              checkov -d . --output junitxml --skip-check CKV_TF_1 --skip-check CKV_TF_2 > $(System.DefaultWorkingDirectory)/results_junitxml.xml
+            displayName: Checkov Static Code Analysis
+          - task: PublishTestResults@2
+            displayName: Publish Checkov Test Results
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: Junit
+              testResultsFiles: "**/*results_junitxml.xml"
+              searchFolder: "$(System.DefaultWorkingDirectory)"
+              mergeTestResults: true
+              testRunTitle: Checkov Scan
+              failTaskOnFailedTests: true
+              publishRunAttachments: true
+      - job: Linting
+        steps:
+          - script: |
+              cd $(System.DefaultWorkingDirectory)
+              curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+              mkdir $(System.DefaultWorkingDirectory)/tflintoutput
+              tflint --init -c $(System.DefaultWorkingDirectory)/.azuredevops/pipelines/lintconfig.hcl
+              tflint --recursive -c $(System.DefaultWorkingDirectory)/.azuredevops/pipelines/lintconfig.hcl --format junit | tee $(System.DefaultWorkingDirectory)/tflintoutput/results_tflint.xml
+            displayName: TFLint
+          - task: PublishTestResults@2
+            displayName: Publish TFLint Test Results
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: Junit
+              testResultsFiles: "**/tflintoutput/results_tflint.xml"
+              searchFolder: "$(System.DefaultWorkingDirectory)"
+              mergeTestResults: false
+              testRunTitle: TFLint
+              failTaskOnFailedTests: true
+              publishRunAttachments: true
+  - stage: DeployInfrastructure
+    displayName: Deploy ${{ parameters.environment }} Shared AKS
+    dependsOn: CodeQuality
+    jobs:
+      - template: "/.azuredevops/templates/plan_apply.yml"
+        parameters:
+          backendServiceConnection: $(backendServiceConnection)
+          environmentServiceConnection: $(environmentServiceConnection)
+          resourceGroupName: $(resourceGroupName)
+          storageAccountName: $(storageAccountName)
+          containerName: $(containerName)
+          stateFileName: $(stateFileName)
+          workingDirectory: $(tfWorkingDirectory)
+          environmentVars:
+            AZDO_PERSONAL_ACCESS_TOKEN: $(DEVOPS-PAT-TOKEN)
+            AZDO_ORG_SERVICE_URL: $(AZDO-ORG-SERVICE-URL)
+            AZURE_DEVOPS_EXT_GIT_SOURCE_PASSWORD_OR_PAT: $(DEVOPS-PAT-TOKEN)
+            AZURE_DEVOPS_EXT_PAT: $(DEVOPS-PAT-TOKEN)
+            TF_VAR_dtap_environment: ${{ parameters.environment }}
+            TF_VAR_subscription_id: ${{ variables.subscription_id }}
